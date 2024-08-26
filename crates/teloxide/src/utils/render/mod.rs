@@ -11,8 +11,8 @@ mod html;
 mod markdown;
 mod tag;
 
-/// The [`Render`] struct is responsible for parsing the text and entities to produce
-/// the final formatted output.
+/// The [`Render`] struct is responsible for parsing the text and entities to
+/// produce the final formatted output.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Render<'a> {
     text: &'a str,
@@ -82,8 +82,7 @@ impl<'a> Render<'a> {
             tags.push(Tag::start(kind.clone(), entity.offset, index));
             tags.push(Tag::end(kind, entity.offset + entity.length, index));
         }
-        
-        
+
         tags.sort_unstable();
 
         Self { text, tags }

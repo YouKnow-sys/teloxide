@@ -1,4 +1,5 @@
-//! A helprt trait for rendering text/caption and entities back to html or markdown
+//! A helprt trait for rendering text/caption and entities back to html or
+//! markdown
 
 use teloxide_core::types::Message;
 

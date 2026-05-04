@@ -158,14 +158,14 @@ impl InputFile {
     }
 
     /// Takes the file name or tries to guess it based on file name in the path
-    /// if `File.0`. Returns an empty string if couldn't guess.
-    fn take_or_guess_filename(&mut self) -> Cow<'static, str> {
+    /// if `File.0`. Uses `fallback` if couldn't guess.
+    fn take_or_guess_filename(&mut self, fallback: Cow<'static, str>) -> Cow<'static, str> {
         self.file_name.take().unwrap_or_else(|| match &self.inner {
             File(path_to_file) => match path_to_file.file_name() {
                 Some(name) => Cow::Owned(name.to_string_lossy().into_owned()),
-                None => Cow::Borrowed(""),
+                None => fallback,
             },
-            _ => Cow::Borrowed(""),
+            _ => fallback,
         })
     }
 }
@@ -195,8 +195,11 @@ impl Serialize for InputFile {
 // internal api
 
 impl InputFile {
-    pub(crate) fn into_part(mut self) -> Option<impl Future<Output = Part>> {
-        let filename = self.take_or_guess_filename();
+    pub(crate) fn into_part(
+        mut self,
+        filename_fallback: impl Into<Cow<'static, str>>,
+    ) -> Option<impl Future<Output = Part>> {
+        let filename = self.take_or_guess_filename(filename_fallback.into());
 
         match self.inner {
             // Url and FileId are serialized just as strings, they don't need additional parts
@@ -217,18 +220,22 @@ impl InputFile {
                         }
                     };
 
-                    Part::stream(body).file_name(filename)
+                    upload_part(Part::stream(body).file_name(filename))
                 };
 
                 Some(Either::Left(fut))
             }
             Bytes(data) => {
-                let stream = Part::stream(data).file_name(filename);
+                let stream = upload_part(Part::stream(data).file_name(filename));
                 Some(Either::Right(Either::Left(ready(stream))))
             }
             Read(read) => Some(Either::Right(Either::Right(read.into_part(filename)))),
         }
     }
+}
+
+fn upload_part(part: Part) -> Part {
+    part.mime_str("multipart/form-data").expect("multipart/form-data must be a valid MIME type")
 }
 
 /// Adaptor for `AsyncRead` that allows clonning and converting to
@@ -258,7 +265,7 @@ impl Read {
                     let fr = FramedRead::new(ExclusiveArcAsyncRead(arc_box), BytesDecoder);
 
                     let body = Body::wrap_stream(fr);
-                    return Part::stream(body).file_name(filename);
+                    return upload_part(Part::stream(body).file_name(filename));
                 }
                 // move the arc back into `self`
                 Err(i) => self.inner = i,
@@ -269,7 +276,7 @@ impl Read {
         // a buffer, or be the one who reads
         let body = self.into_shared_body().await;
 
-        Part::stream(body).file_name(filename)
+        upload_part(Part::stream(body).file_name(filename))
     }
 
     async fn into_shared_body(mut self) -> Body {
@@ -389,12 +396,20 @@ impl Decoder for BytesDecoder {
 /// with input-file-like things (`InputFile` itself, `Option<InputFile>`,
 /// `InputSticker`)
 pub(crate) trait InputFileLike {
+    fn direct_upload_field(&self, field: &'static str, into: &mut dyn FnMut(&'static str, &str));
+
     fn copy_into(&self, into: &mut dyn FnMut(InputFile));
 
     fn move_into(&mut self, into: &mut dyn FnMut(InputFile));
 }
 
 impl InputFileLike for InputFile {
+    fn direct_upload_field(&self, field: &'static str, into: &mut dyn FnMut(&'static str, &str)) {
+        if self.needs_attach() {
+            into(field, self.id())
+        }
+    }
+
     fn copy_into(&self, into: &mut dyn FnMut(InputFile)) {
         into(self.clone())
     }
@@ -405,6 +420,12 @@ impl InputFileLike for InputFile {
 }
 
 impl InputFileLike for Option<InputFile> {
+    fn direct_upload_field(&self, field: &'static str, into: &mut dyn FnMut(&'static str, &str)) {
+        if let Some(this) = self {
+            this.direct_upload_field(field, into)
+        }
+    }
+
     fn copy_into(&self, into: &mut dyn FnMut(InputFile)) {
         if let Some(this) = self {
             this.copy_into(into)
@@ -419,6 +440,8 @@ impl InputFileLike for Option<InputFile> {
 }
 
 impl InputFileLike for InputSticker {
+    fn direct_upload_field(&self, _: &'static str, _: &mut dyn FnMut(&'static str, &str)) {}
+
     fn copy_into(&self, into: &mut dyn FnMut(InputFile)) {
         self.sticker.copy_into(into)
     }

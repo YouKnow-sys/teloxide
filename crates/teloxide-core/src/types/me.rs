@@ -14,23 +14,22 @@ pub struct Me {
     pub user: User,
 
     /// `true`, if the bot can be invited to groups.
-    pub can_join_groups: bool,
+    pub can_join_groups: Option<bool>,
 
     /// `true`, if [privacy mode] is disabled for the bot.
     ///
     /// [privacy mode]: https://core.telegram.org/bots#privacy-mode
-    pub can_read_all_group_messages: bool,
+    pub can_read_all_group_messages: Option<bool>,
 
     /// `true`, if the bot supports inline queries.
-    pub supports_inline_queries: bool,
+    pub supports_inline_queries: Option<bool>,
 
     /// `true`, if the bot can be connected to a Telegram Business account to
     /// receive its messages.
-    #[serde(default)]
-    pub can_connect_to_business: bool,
+    pub can_connect_to_business: Option<bool>,
 
     /// `true`, if the bot has a main Web App.
-    pub has_main_web_app: bool,
+    pub has_main_web_app: Option<bool>,
 }
 
 impl Me {
@@ -78,11 +77,11 @@ mod tests {
                 is_premium: false,
                 added_to_attachment_menu: false,
             },
-            can_join_groups: false,
-            can_read_all_group_messages: false,
-            supports_inline_queries: false,
-            can_connect_to_business: false,
-            has_main_web_app: false,
+            can_join_groups: None,
+            can_read_all_group_messages: None,
+            supports_inline_queries: None,
+            can_connect_to_business: None,
+            has_main_web_app: None,
         };
 
         assert_eq!(me.username(), "SomethingSomethingBot");

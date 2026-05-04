@@ -356,6 +356,12 @@ macro_rules! impl_payload {
     };
     (@[multipart = $($multipart_attr:ident),*] $Method:ident req { $($reqf:ident),* } opt { $($optf:ident),*} ) => {
         impl crate::requests::MultipartPayload for $Method {
+            fn direct_upload_fields(&self, into: &mut dyn FnMut(&'static str, &str)) {
+                $(
+                    crate::types::InputFileLike::direct_upload_field(&self.$multipart_attr, stringify!($multipart_attr), into);
+                )*
+            }
+
             fn copy_files(&self, into: &mut dyn FnMut(crate::types::InputFile)) {
                 $(
                     crate::types::InputFileLike::copy_into(&self.$multipart_attr, into);

@@ -7,11 +7,15 @@ use serde::{
 };
 
 /// The main serializer that serializes top-level and structures
-pub(super) struct MultipartSerializer(Form);
+pub(super) struct MultipartSerializer {
+    form: Form,
+    skip_fields: Vec<&'static str>,
+}
 
 /// Serializer for maps (support for `#[serde(flatten)]`)
 pub(super) struct MultipartMapSerializer {
     form: Form,
+    skip_fields: Vec<&'static str>,
     key: Option<String>,
 }
 
@@ -39,8 +43,8 @@ enum PartSerializerStructState {
 }
 
 impl MultipartSerializer {
-    pub(super) fn new() -> Self {
-        Self(Form::new())
+    pub(super) fn new(skip_fields: Vec<&'static str>) -> Self {
+        Self { form: Form::new(), skip_fields }
     }
 }
 
@@ -62,7 +66,7 @@ impl Serializer for MultipartSerializer {
     type SerializeStructVariant = Impossible<Self::Ok, Self::Error>;
 
     fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        Ok(MultipartMapSerializer { form: Form::new(), key: None })
+        Ok(MultipartMapSerializer { form: Form::new(), skip_fields: self.skip_fields, key: None })
     }
 
     fn serialize_struct(
@@ -233,14 +237,18 @@ impl SerializeStruct for MultipartSerializer {
     where
         T: Serialize,
     {
+        if self.skip_fields.contains(&key) {
+            return Ok(());
+        }
+
         let part = value.serialize(PartSerializer {})?;
-        take_mut::take(&mut self.0, |f| f.part(key, part));
+        take_mut::take(&mut self.form, |f| f.part(key, part));
 
         Ok(())
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(self.0)
+        Ok(self.form)
     }
 }
 
@@ -264,6 +272,10 @@ impl SerializeMap for MultipartMapSerializer {
         T: Serialize,
     {
         let key = self.key.take().expect("Value serialized before key or key is not string");
+
+        if self.skip_fields.iter().any(|field| *field == key) {
+            return Ok(());
+        }
 
         let part = value.serialize(PartSerializer {})?;
 

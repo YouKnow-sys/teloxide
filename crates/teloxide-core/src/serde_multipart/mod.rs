@@ -29,7 +29,10 @@ pub(crate) fn to_form<T>(val: &mut T) -> Result<impl Future<Output = Form>, Erro
 where
     T: Serialize + MultipartPayload,
 {
-    let mut form = val.serialize(MultipartSerializer::new())?;
+    let direct_upload_fields = collect_direct_upload_fields(val);
+    let direct_file_fields = direct_upload_fields.iter().map(|(_, field)| *field).collect();
+
+    let mut form = val.serialize(MultipartSerializer::new(direct_file_fields))?;
 
     let mut vec = Vec::with_capacity(1);
     val.move_files(&mut |f| vec.push(f));
@@ -39,8 +42,12 @@ where
         for file in iter {
             if file.needs_attach() {
                 let id = file.id().to_owned();
-                if let Some(part) = file.into_part() {
-                    form = form.part(id, part.await);
+                let field = direct_upload_fields
+                    .iter()
+                    .find_map(|(direct_id, field)| (direct_id == &id).then_some(*field))
+                    .unwrap_or(&id);
+                if let Some(part) = file.into_part(field.to_owned()) {
+                    form = form.part(field.to_owned(), part.await);
                 }
             }
         }
@@ -58,7 +65,10 @@ pub(crate) fn to_form_ref<T: ?Sized>(val: &T) -> Result<impl Future<Output = For
 where
     T: Serialize + MultipartPayload,
 {
-    let mut form = val.serialize(MultipartSerializer::new())?;
+    let direct_upload_fields = collect_direct_upload_fields(val);
+    let direct_file_fields = direct_upload_fields.iter().map(|(_, field)| *field).collect();
+
+    let mut form = val.serialize(MultipartSerializer::new(direct_file_fields))?;
     let mut vec = Vec::with_capacity(1);
     val.copy_files(&mut |f| vec.push(f));
 
@@ -68,8 +78,12 @@ where
         for file in iter {
             if file.needs_attach() {
                 let id = file.id().to_owned();
-                if let Some(part) = file.into_part() {
-                    form = form.part(id, part.await);
+                let field = direct_upload_fields
+                    .iter()
+                    .find_map(|(direct_id, field)| (direct_id == &id).then_some(*field))
+                    .unwrap_or(&id);
+                if let Some(part) = file.into_part(field.to_owned()) {
+                    form = form.part(field.to_owned(), part.await);
                 }
             }
         }
@@ -80,11 +94,22 @@ where
     Ok(fut)
 }
 
+fn collect_direct_upload_fields<T: ?Sized>(val: &T) -> Vec<(String, &'static str)>
+where
+    T: MultipartPayload,
+{
+    let mut direct_upload_fields = Vec::with_capacity(1);
+    val.direct_upload_fields(&mut |field, file_id| {
+        direct_upload_fields.push((file_id.to_owned(), field));
+    });
+    direct_upload_fields
+}
+
 #[cfg(test)]
 mod tests {
     use tokio::fs::File;
 
-    use super::to_form_ref;
+    use super::{collect_direct_upload_fields, to_form_ref};
     use crate::{
         payloads::{self, setters::*},
         types::{
@@ -104,6 +129,36 @@ mod tests {
         )
         .unwrap()
         .await;
+    }
+
+    #[test]
+    fn direct_upload_fields_only_include_top_level_input_files() {
+        let photo = payloads::SendPhoto::new(ChatId(0), InputFile::memory(&b"photo"[..]));
+        let photo_fields = collect_direct_upload_fields(&photo);
+        assert_eq!(photo_fields.len(), 1);
+        assert_eq!(photo_fields[0].1, "photo");
+
+        let photo_by_id = payloads::SendPhoto::new(ChatId(0), InputFile::file_id("id".into()));
+        assert!(collect_direct_upload_fields(&photo_by_id).is_empty());
+
+        let sticker = payloads::AddStickerToSet::new(
+            UserId(0),
+            "name",
+            InputSticker {
+                sticker: InputFile::memory(&b"sticker"[..]),
+                emoji_list: vec!["✈️⚙️".to_owned()],
+                keywords: vec![],
+                mask_position: None,
+                format: StickerFormat::Static,
+            },
+        );
+        assert!(collect_direct_upload_fields(&sticker).is_empty());
+
+        let media_group = payloads::SendMediaGroup::new(
+            ChatId(0),
+            [InputMedia::Photo(InputMediaPhoto::new(InputFile::memory(&b"group-photo"[..])))],
+        );
+        assert!(collect_direct_upload_fields(&media_group).is_empty());
     }
 
     #[tokio::test]

@@ -21,8 +21,10 @@ use tokio::io::ReadBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::codec::{Decoder, FramedRead};
 
-use crate::send::MaybeSend;
-use crate::types::{self, InputSticker};
+use crate::{
+    send::MaybeSend,
+    types::{self, InputSticker},
+};
 
 /// The boxed reader type used by [`InputFile::read`]: `Send` natively, no bound
 /// on `wasm32` (where readers are commonly `!Send`).

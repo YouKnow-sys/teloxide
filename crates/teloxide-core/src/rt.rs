@@ -124,8 +124,8 @@ impl std::error::Error for JoinError {}
 #[cfg(not(target_arch = "wasm32"))]
 pub use tokio::task::JoinHandle;
 
-/// Spawns a future: [`tokio::spawn`] natively, `wasm_bindgen_futures::spawn_local`
-/// on `wasm32`.
+/// Spawns a future: [`tokio::spawn`] natively,
+/// `wasm_bindgen_futures::spawn_local` on `wasm32`.
 pub fn spawn<F>(fut: F) -> JoinHandle<F::Output>
 where
     F: Future + MaybeSend + 'static,

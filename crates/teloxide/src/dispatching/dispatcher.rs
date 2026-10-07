@@ -6,7 +6,7 @@ use crate::{
     error_handlers::{ErrorHandler, LoggingErrorHandler},
     requests::{Request, Requester},
     stop::StopToken,
-    types::{Update, UpdateKind},
+    types::{Me, Update, UpdateKind},
     update_listeners::{self, UpdateListener},
 };
 
@@ -570,6 +570,62 @@ where
         }
     }
 
+    /// Dispatches a single update through the handler tree.
+    ///
+    /// Intended for setups where updates arrive one at a time from outside a
+    /// listener, e.g. a webhook in a serverless environment: parse the
+    /// [`Update`] and pass it here.
+    ///
+    /// This behaves like the dispatch loop does for one update: the bot, the
+    /// update and [`Me`] are injected as dependencies, an unhandled update goes
+    /// to the default handler, and a handler error goes to the error handler.
+    /// The difference is that the update is processed inline, without workers,
+    /// so there is no per-chat ordering, backpressure or graceful shutdown.
+    /// Concurrent calls are allowed and are not serialized.
+    ///
+    /// [`Me`] is taken from the dependencies if present; otherwise it is
+    /// fetched with [`get_me`] **on every call**. To avoid that, pass `Me`
+    /// via [`DispatcherBuilder::dependencies`] or wrap the bot in
+    /// [`CacheMe`](crate::adaptors::CacheMe).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `Me` is not provided and the `get_me` request fails.
+    ///
+    /// [`get_me`]: crate::requests::Requester::get_me
+    /// [`DispatcherBuilder::dependencies`]:
+    /// crate::dispatching::DispatcherBuilder::dependencies
+    pub async fn dispatch_one(&self, update: Update)
+    where
+        R: Requester + Clone + Send + Sync + 'static,
+        Err: Send + Sync + 'static,
+    {
+        if let UpdateKind::Error(err) = update.kind {
+            log::error!(
+                "Cannot parse an update.\nError: {err:?}\n\
+                    This is a bug in teloxide-core, please open an issue here: \
+                    https://github.com/teloxide/teloxide/issues.",
+            );
+            return;
+        }
+
+        let mut deps = self.dependencies.clone();
+        deps.insert(self.bot.clone());
+        if deps.try_get::<Me>().is_none() {
+            let me = self.bot.get_me().send().await.expect("Couldn't prepare dispatching context");
+            deps.insert(me);
+        }
+
+        handle_update(
+            update,
+            Arc::new(deps),
+            Arc::clone(&self.handler),
+            Arc::clone(&self.default_handler),
+            Arc::clone(&self.error_handler),
+        )
+        .await;
+    }
+
     /// Returns a shutdown token, which can later be used to
     /// [`ShutdownToken::shutdown`].
     pub fn shutdown_token(&self) -> ShutdownToken {
@@ -714,11 +770,81 @@ fn either<L, R>(x: future::Either<L, R>) -> Either<L, R> {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        sync::{atomic::AtomicBool, Arc},
+    };
 
-    use teloxide_core::Bot;
+    use chrono::DateTime;
+    use dptree::deps;
+    use teloxide_core::{
+        types::{
+            Chat, ChatId, ChatKind, ChatPrivate, MaybeAnonymousUser, Me, MessageId,
+            MessageReactionUpdated, Update, UpdateId, UpdateKind, User, UserId,
+        },
+        Bot,
+    };
+
+    use crate::dispatching::UpdateFilterExt;
 
     use super::*;
+
+    fn make_me() -> Me {
+        Me {
+            user: User {
+                id: UserId(42),
+                is_bot: true,
+                first_name: "teloxide".to_owned(),
+                last_name: None,
+                username: Some("TeloxidegBot".to_owned()),
+                language_code: None,
+                is_premium: false,
+                added_to_attachment_menu: false,
+            },
+            can_join_groups: false,
+            can_read_all_group_messages: false,
+            supports_inline_queries: false,
+            can_connect_to_business: false,
+            has_main_web_app: false,
+        }
+    }
+
+    fn make_update() -> Update {
+        Update {
+            id: UpdateId(1),
+            kind: UpdateKind::MessageReaction(MessageReactionUpdated {
+                chat: Chat {
+                    id: ChatId(1),
+                    kind: ChatKind::Private(ChatPrivate {
+                        username: None,
+                        first_name: None,
+                        last_name: None,
+                    }),
+                },
+                message_id: MessageId(1),
+                actor: MaybeAnonymousUser::User(User {
+                    id: UserId(2),
+                    is_bot: false,
+                    first_name: "Test".to_owned(),
+                    last_name: None,
+                    username: None,
+                    language_code: None,
+                    is_premium: false,
+                    added_to_attachment_menu: false,
+                }),
+                date: DateTime::from_timestamp(0, 0).unwrap(),
+                old_reaction: vec![],
+                new_reaction: vec![],
+            }),
+        }
+    }
+
+    fn make_malformed_update() -> Update {
+        Update {
+            id: UpdateId(1),
+            kind: UpdateKind::Error(serde_json::Value::Object(<_>::default())),
+        }
+    }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -734,5 +860,114 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn dispatch_one_runs_endpoint_with_me_and_bot() {
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&called);
+
+        let handler = dptree::entry().endpoint(move |me: Me, _bot: Bot, upd: Update| {
+            let flag = Arc::clone(&flag);
+            async move {
+                assert_eq!(me.user.id, UserId(42));
+                assert_eq!(upd.id, UpdateId(1));
+                flag.store(true, Ordering::Relaxed);
+                Ok::<(), Infallible>(())
+            }
+        });
+
+        let dp =
+            Dispatcher::builder(Bot::new("TOKEN"), handler).dependencies(deps![make_me()]).build();
+
+        dp.dispatch_one(make_update()).await;
+
+        assert!(called.load(Ordering::Relaxed));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn dispatch_one_calls_default_handler_when_unhandled() {
+        let endpoint_called = Arc::new(AtomicBool::new(false));
+        let default_called = Arc::new(AtomicBool::new(false));
+
+        // A message-only handler; the update is a reaction, so it won't match.
+        let flag = Arc::clone(&endpoint_called);
+        let handler = Update::filter_message().endpoint(move || {
+            let flag = Arc::clone(&flag);
+            async move {
+                flag.store(true, Ordering::Relaxed);
+                Ok::<(), Infallible>(())
+            }
+        });
+
+        let default_flag = Arc::clone(&default_called);
+        let dp = Dispatcher::builder(Bot::new("TOKEN"), handler)
+            .dependencies(deps![make_me()])
+            .default_handler(move |_: Arc<Update>| {
+                let default_flag = Arc::clone(&default_flag);
+                async move { default_flag.store(true, Ordering::Relaxed) }
+            })
+            .build();
+
+        dp.dispatch_one(make_update()).await;
+
+        assert!(!endpoint_called.load(Ordering::Relaxed));
+        assert!(default_called.load(Ordering::Relaxed));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn dispatch_one_calls_error_handler_on_handler_error() {
+        let handled = Arc::new(AtomicBool::new(false));
+
+        let handler = dptree::entry().endpoint(|| async { Err::<(), _>(7u8) });
+
+        let flag = Arc::clone(&handled);
+        let dp = Dispatcher::builder(Bot::new("TOKEN"), handler)
+            .dependencies(deps![make_me()])
+            .error_handler(Arc::new(move |err: u8| {
+                let flag = Arc::clone(&flag);
+                async move {
+                    assert_eq!(err, 7);
+                    flag.store(true, Ordering::Relaxed);
+                }
+            }))
+            .build();
+
+        dp.dispatch_one(make_update()).await;
+
+        assert!(handled.load(Ordering::Relaxed));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn dispatch_one_skips_malformed_updates() {
+        let endpoint_called = Arc::new(AtomicBool::new(false));
+        let default_called = Arc::new(AtomicBool::new(false));
+
+        let flag = Arc::clone(&endpoint_called);
+        let handler = dptree::entry().endpoint(move || {
+            let flag = Arc::clone(&flag);
+            async move {
+                flag.store(true, Ordering::Relaxed);
+                Ok::<(), Infallible>(())
+            }
+        });
+
+        let default_flag = Arc::clone(&default_called);
+        let dp = Dispatcher::builder(Bot::new("TOKEN"), handler)
+            .dependencies(deps![make_me()])
+            .default_handler(move |_: Arc<Update>| {
+                let default_flag = Arc::clone(&default_flag);
+                async move { default_flag.store(true, Ordering::Relaxed) }
+            })
+            .build();
+
+        dp.dispatch_one(make_malformed_update()).await;
+
+        assert!(!endpoint_called.load(Ordering::Relaxed));
+        assert!(!default_called.load(Ordering::Relaxed));
     }
 }

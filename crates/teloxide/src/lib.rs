@@ -110,6 +110,11 @@
 //! On `wasm32` everything runs on a single thread, so futures aren't required
 //! to be `Send` and handler closures may be `!Send`.
 //!
+//! In serverless environments (e.g. Cloudflare Workers), where each webhook
+//! request is a separate invocation, use
+//! [`Dispatcher::dispatch_one`](crate::dispatching::Dispatcher::dispatch_one)
+//! to process a single update per request instead of the dispatch loop.
+//!
 //! [update kinds]: crate::types::UpdateKind
 //! [message kinds]: crate::types::MessageKind
 //! [`Update`]: crate::types::Update

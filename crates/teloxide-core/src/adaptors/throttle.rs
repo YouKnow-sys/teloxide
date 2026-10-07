@@ -123,7 +123,7 @@ impl<B> Throttle<B> {
     {
         let (this, worker) = Self::new(bot, limits);
 
-        tokio::spawn(worker);
+        crate::rt::spawn(worker);
 
         this
     }
@@ -137,7 +137,7 @@ impl<B> Throttle<B> {
     {
         let (this, worker) = Self::with_settings(bot, settings);
 
-        tokio::spawn(worker);
+        crate::rt::spawn(worker);
         this
     }
 

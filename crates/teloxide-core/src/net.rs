@@ -1,5 +1,6 @@
 //! Network-specific API.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 pub use self::download::{download_file, download_file_stream, Download};
@@ -34,20 +35,35 @@ pub const TELEGRAM_API_URL: &str = "https://api.telegram.org";
 /// ## Panics
 ///
 /// If `TELOXIDE_PROXY` exists, but isn't correct url.
+///
+/// ## Note
+///
+/// On `wasm32` the `TELOXIDE_PROXY` variable is ignored: proxies can't be
+/// configured through reqwest's WebAssembly support, so any proxying is up to
+/// the host environment.
 #[must_use]
 pub fn client_from_env() -> reqwest::Client {
-    use reqwest::Proxy;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use reqwest::Proxy;
 
-    const TELOXIDE_PROXY: &str = "TELOXIDE_PROXY";
+        const TELOXIDE_PROXY: &str = "TELOXIDE_PROXY";
 
-    let builder = default_reqwest_settings();
+        let builder = default_reqwest_settings();
 
-    match std::env::var(TELOXIDE_PROXY).ok() {
-        Some(proxy) => builder.proxy(Proxy::all(proxy).expect("reqwest::Proxy creation failed")),
-        None => builder,
+        match std::env::var(TELOXIDE_PROXY).ok() {
+            Some(proxy) => {
+                builder.proxy(Proxy::all(proxy).expect("reqwest::Proxy creation failed"))
+            }
+            None => builder,
+        }
+        .build()
+        .expect("creating reqwest::Client")
     }
-    .build()
-    .expect("creating reqwest::Client")
+    #[cfg(target_arch = "wasm32")]
+    {
+        default_reqwest_settings().build().expect("creating reqwest::Client")
+    }
 }
 
 /// Returns a reqwest client builder with default settings.
@@ -67,13 +83,22 @@ pub fn client_from_env() -> reqwest::Client {
 ///    configured in the client should be bigger than the polling timeout.
 /// 3. If you alter the current settings listed above, your bot will not be
 ///    guaranteed to work over long time durations.
+/// 4. On `wasm32` none of the settings above can be configured through
+///    reqwest's WebAssembly support, so the builder is returned unconfigured.
 ///
 /// [issue 223]: https://github.com/teloxide/teloxide/issues/223
 pub fn default_reqwest_settings() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(17))
-        .tcp_nodelay(true)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(17))
+            .tcp_nodelay(true)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        reqwest::Client::builder()
+    }
 }
 
 /// Creates URL for making HTTPS requests. See the [Telegram documentation].

@@ -1,25 +1,35 @@
 use bytes::{Bytes, BytesMut};
-use futures::{
-    future::{ready, Either},
-    stream,
-};
 use once_cell::sync::OnceCell;
+#[cfg(not(target_arch = "wasm32"))]
 use rc_box::ArcBox;
 use reqwest::{multipart::Part, Body};
 use serde::Serialize;
 use takecell::TakeCell;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, ReadBuf},
+    io::{AsyncRead, AsyncReadExt},
     sync::watch,
 };
+
+use std::{borrow::Cow, fmt, io, mem, sync::Arc};
+
+#[cfg(not(target_arch = "wasm32"))]
+use futures::stream;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{convert::Infallible, iter, path::PathBuf, pin::Pin, task};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::io::ReadBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_util::codec::{Decoder, FramedRead};
 
-use std::{
-    borrow::Cow, convert::Infallible, fmt, future::Future, io, iter, mem, path::PathBuf, pin::Pin,
-    sync::Arc, task,
-};
-
+use crate::send::MaybeSend;
 use crate::types::{self, InputSticker};
+
+/// The boxed reader type used by [`InputFile::read`]: `Send` natively, no bound
+/// on `wasm32` (where readers are commonly `!Send`).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type DynAsyncRead = dyn AsyncRead + Send + Unpin;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type DynAsyncRead = dyn AsyncRead + Unpin;
 
 /// This object represents the contents of a file to be uploaded.
 ///
@@ -36,6 +46,7 @@ pub struct InputFile {
 #[derive(Clone)]
 enum InnerFile {
     Read(Read),
+    #[cfg(not(target_arch = "wasm32"))]
     File(PathBuf),
     Bytes(bytes::Bytes),
     Url(url::Url),
@@ -85,6 +96,7 @@ impl InputFile {
     }
 
     /// Creates an `InputFile` from a file path.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self::new(File(path.into()))
     }
@@ -103,8 +115,10 @@ impl InputFile {
     /// Creates an `InputFile` from a in-memory bytes.
     ///
     /// Note: in some cases (e.g. sending the same `InputFile` multiple times)
-    /// this may read the whole `impl AsyncRead` into memory.
-    pub fn read(it: impl AsyncRead + Send + Unpin + 'static) -> Self {
+    /// this may read the whole `impl AsyncRead` into memory. On `wasm32` the
+    /// data is always read into memory, and an I/O error while reading fails
+    /// the request.
+    pub fn read(it: impl AsyncRead + MaybeSend + Unpin + 'static) -> Self {
         Self::new(Read(Read::new(Arc::new(TakeCell::new(it)))))
     }
 
@@ -161,6 +175,7 @@ impl InputFile {
     /// if `File.0`. Returns an empty string if couldn't guess.
     fn take_or_guess_filename(&mut self) -> Cow<'static, str> {
         self.file_name.take().unwrap_or_else(|| match &self.inner {
+            #[cfg(not(target_arch = "wasm32"))]
             File(path_to_file) => match path_to_file.file_name() {
                 Some(name) => Cow::Owned(name.to_string_lossy().into_owned()),
                 None => Cow::Borrowed(""),
@@ -174,6 +189,7 @@ impl fmt::Debug for InnerFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Read(_) => f.debug_struct("Read").finish_non_exhaustive(),
+            #[cfg(not(target_arch = "wasm32"))]
             File(path) => f.debug_struct("File").field("path", path).finish(),
             Bytes(bytes) if f.alternate() => f.debug_tuple("Memory").field(bytes).finish(),
             Bytes(_) => f.debug_struct("Memory").finish_non_exhaustive(),
@@ -195,38 +211,32 @@ impl Serialize for InputFile {
 // internal api
 
 impl InputFile {
-    pub(crate) fn into_part(mut self) -> Option<impl Future<Output = Part>> {
+    /// Converts this file into a multipart [`Part`].
+    ///
+    /// Must only be called if [`needs_attach`](Self::needs_attach) is `true`.
+    ///
+    /// The future can fail with an [`io::Error`] only on `wasm32`, where
+    /// request bodies are fully buffered and can't carry a read error
+    /// (natively, errors are reported lazily through the body stream).
+    pub(crate) async fn into_part(mut self) -> io::Result<Part> {
         let filename = self.take_or_guess_filename();
 
         match self.inner {
-            // Url and FileId are serialized just as strings, they don't need additional parts
-            Url(_) | FileId(_) => None,
-
+            Url(_) | FileId(_) => unreachable!("`into_part` called on a file that needs no part"),
+            #[cfg(not(target_arch = "wasm32"))]
             File(path_to_file) => {
-                let fut = async {
-                    let body = match tokio::fs::File::open(path_to_file).await {
-                        Ok(file) => {
-                            let file = FramedRead::new(file, BytesDecoder);
-
-                            Body::wrap_stream(file)
-                        }
-                        Err(err) => {
-                            // explicit type needed for `Bytes: From<?T>` in `wrap_stream`
-                            let err = Err::<Bytes, _>(err);
-                            Body::wrap_stream(stream::iter([err]))
-                        }
-                    };
-
-                    Part::stream(body).file_name(filename)
+                let body = match tokio::fs::File::open(path_to_file).await {
+                    Ok(file) => Body::wrap_stream(FramedRead::new(file, BytesDecoder)),
+                    Err(err) => {
+                        let err = Err::<Bytes, _>(err);
+                        Body::wrap_stream(stream::iter([err]))
+                    }
                 };
 
-                Some(Either::Left(fut))
+                Ok(Part::stream(body).file_name(filename))
             }
-            Bytes(data) => {
-                let stream = Part::stream(data).file_name(filename);
-                Some(Either::Right(Either::Left(ready(stream))))
-            }
-            Read(read) => Some(Either::Right(Either::Right(read.into_part(filename)))),
+            Bytes(data) => Ok(Part::stream(data).file_name(filename)),
+            Read(read) => read.into_part(filename).await,
         }
     }
 }
@@ -235,30 +245,35 @@ impl InputFile {
 /// `multipart/form-data`
 #[derive(Clone)]
 struct Read {
-    inner: Arc<TakeCell<dyn AsyncRead + Send + Unpin>>,
+    inner: Arc<TakeCell<DynAsyncRead>>,
     buf: Arc<OnceCell<Result<Vec<Bytes>, Arc<io::Error>>>>,
     notify: Arc<watch::Sender<()>>,
     wait: watch::Receiver<()>,
 }
 
 impl Read {
-    fn new(it: Arc<TakeCell<dyn AsyncRead + Send + Unpin>>) -> Self {
+    fn new(it: Arc<TakeCell<DynAsyncRead>>) -> Self {
         let (tx, rx) = watch::channel(());
 
         Self { inner: it, buf: Arc::default(), notify: Arc::new(tx), wait: rx }
     }
 
-    pub(crate) async fn into_part(mut self, filename: Cow<'static, str>) -> Part {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    pub(crate) async fn into_part(mut self, filename: Cow<'static, str>) -> io::Result<Part> {
+        // Fast/easy path (natively): this is the only file copy, so we can just
+        // forward the underlying `dyn AsyncRead` via some adaptors to reqwest.
+        //
+        // On wasm32 reqwest bodies are fully buffered, so there is no point in
+        // forwarding. always take the (buffering) slow path.
+        #[cfg(not(target_arch = "wasm32"))]
         if !self.inner.is_taken() {
-            let res = ArcBox::<TakeCell<dyn AsyncRead + Send + Unpin>>::try_from(self.inner);
+            let res = ArcBox::<TakeCell<DynAsyncRead>>::try_from(self.inner);
             match res {
-                // Fast/easy path: this is the only file copy, so we can just forward the underlying
-                // `dyn AsyncRead` via some adaptors to reqwest.
                 Ok(arc_box) => {
                     let fr = FramedRead::new(ExclusiveArcAsyncRead(arc_box), BytesDecoder);
 
                     let body = Body::wrap_stream(fr);
-                    return Part::stream(body).file_name(filename);
+                    return Ok(Part::stream(body).file_name(filename));
                 }
                 // move the arc back into `self`
                 Err(i) => self.inner = i,
@@ -267,12 +282,12 @@ impl Read {
 
         // Slow path: either wait until someone will read the whole `dyn AsyncRead` into
         // a buffer, or be the one who reads
-        let body = self.into_shared_body().await;
+        let body = self.into_shared_body().await?;
 
-        Part::stream(body).file_name(filename)
+        Ok(Part::stream(body).file_name(filename))
     }
 
-    async fn into_shared_body(mut self) -> Body {
+    async fn into_shared_body(mut self) -> io::Result<Body> {
         match self.inner.take() {
             // Read `dyn AsyncRead` into a buffer
             Some(mut read_ref) => {
@@ -331,6 +346,7 @@ impl Read {
         // unwrap: `OnceCell` is initialized in the match above before sending
         // notification, so at this point it's already initialized.
         match buf.get().unwrap() {
+            #[cfg(not(target_arch = "wasm32"))]
             Ok(_) => {
                 // We can't use `.iter()` here, because the iterator must capture `buf`
                 let mut i = 0;
@@ -345,20 +361,39 @@ impl Read {
                     Err(_) => unreachable!(),
                 });
 
-                Body::wrap_stream(stream::iter(iter))
+                Ok(Body::wrap_stream(stream::iter(iter)))
             }
 
+            // wasm32 bodies are fully buffered; join the chunks into one.
+            #[cfg(target_arch = "wasm32")]
+            Ok(chunks) => {
+                let len: usize = chunks.iter().map(|c| c.len()).sum();
+                let mut bytes = BytesMut::with_capacity(len);
+                for chunk in chunks {
+                    bytes.extend_from_slice(chunk);
+                }
+                Ok(Body::from(bytes.freeze()))
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
             Err(err) => {
                 let err = Err::<Bytes, _>(Arc::clone(err));
-                Body::wrap_stream(stream::iter(iter::once(err)))
+                Ok(Body::wrap_stream(stream::iter(iter::once(err))))
             }
+
+            // A wasm32 `Body` is plain buffered bytes and can't carry an error,
+            // so fail building the part instead.
+            #[cfg(target_arch = "wasm32")]
+            Err(err) => Err(io::Error::new(err.kind(), Arc::clone(err))),
         }
     }
 }
 
 /// Wrapper over an `ArcBox` that implements `AsyncRead`.
-struct ExclusiveArcAsyncRead(ArcBox<TakeCell<dyn AsyncRead + Send + Unpin>>);
+#[cfg(not(target_arch = "wasm32"))]
+struct ExclusiveArcAsyncRead(ArcBox<TakeCell<DynAsyncRead>>);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl AsyncRead for ExclusiveArcAsyncRead {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -371,8 +406,10 @@ impl AsyncRead for ExclusiveArcAsyncRead {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct BytesDecoder;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Decoder for BytesDecoder {
     type Item = Bytes;
     type Error = io::Error;

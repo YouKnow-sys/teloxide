@@ -1,12 +1,12 @@
 use std::{future::IntoFuture, sync::Arc};
 
-use futures::{future::BoxFuture, FutureExt};
 use reqwest::Url;
 
 use crate::{
     errors::AsResponseParameters,
     payloads::*,
     requests::{HasPayload, Output, Payload, Request, Requester},
+    send::BoxFuture,
     types::*,
 };
 
@@ -124,11 +124,11 @@ where
     type Err = R::Err;
 
     fn send_box(self: Box<Self>) -> BoxFuture<'a, Result<Output<Self>, Self::Err>> {
-        self.send().boxed()
+        Box::pin(self.send())
     }
 
     fn send_ref(&self) -> BoxFuture<'a, Result<Output<Self>, Self::Err>> {
-        Request::send_ref(self).boxed()
+        Box::pin(Request::send_ref(self))
     }
 }
 

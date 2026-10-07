@@ -1,13 +1,15 @@
 use std::{
     collections::{hash_map::Entry, HashMap, VecDeque},
     pin::pin,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use either::Either;
 use futures::{future, FutureExt as _};
 use tokio::sync::{mpsc, mpsc::error::TryRecvError, oneshot::Sender};
 use vecrem::VecExt;
+
+use crate::rt::Instant;
 
 use crate::{
     adaptors::throttle::{request_lock::RequestLock, ChatIdHash, Limits, Settings},
@@ -151,7 +153,7 @@ pub(super) async fn worker<B>(
 
         if queue.len() == queue.capacity() && last_queue_full.elapsed() > QUEUE_FULL_DELAY {
             last_queue_full = Instant::now();
-            tokio::spawn(on_queue_full(queue.len()));
+            crate::rt::spawn(on_queue_full(queue.len()));
         }
 
         // _Maybe_ we need to use `spawn_blocking` here, because there is
@@ -218,7 +220,7 @@ pub(super) async fn worker<B>(
 
         if allowed == 0 {
             requests_sent.per_sec.clear();
-            tokio::time::sleep(DELAY).await;
+            crate::rt::sleep(DELAY).await;
             continue;
         }
 
@@ -279,7 +281,7 @@ pub(super) async fn worker<B>(
         // It's easier to just recompute last second stats, instead of keeping
         // track of it alongside with minute stats, so we just throw this away.
         requests_sent.per_sec.clear();
-        tokio::time::sleep(DELAY).await;
+        crate::rt::sleep(DELAY).await;
     }
 }
 
@@ -348,7 +350,7 @@ async fn freeze(
                  telegram"
             );
 
-            tokio::time::sleep_until(until.into()).await;
+            crate::rt::sleep_until(until).await;
 
             log::warn!("unfreezing the bot");
         }
@@ -388,7 +390,8 @@ fn either<L, R>(x: future::Either<L, R>) -> Either<L, R> {
 
 #[cfg(test)]
 mod tests {
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn issue_535() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 

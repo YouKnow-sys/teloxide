@@ -271,7 +271,7 @@ impl Bot {
 
         // async move to capture client&token&api_url&params
         async move {
-            let params = params?.await;
+            let params = params?.await?;
             net::request_multipart(
                 &client,
                 token.as_ref(),
@@ -301,7 +301,7 @@ impl Bot {
 
         // async move to capture client&token&api_url&params
         async move {
-            let params = params?.await;
+            let params = params?.await?;
             net::request_multipart(
                 &client,
                 token.as_ref(),

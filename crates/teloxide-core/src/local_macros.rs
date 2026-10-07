@@ -45,7 +45,7 @@ macro_rules! req_future {
 
             #[cfg(not(feature = "nightly"))]
             pub(crate) type $i<$T>
-            $(where $($wh)*)?  = ::core::pin::Pin<Box<dyn ::core::future::Future<Output = $Out> + ::core::marker::Send + 'static>>;
+            $(where $($wh)*)?  = $crate::send::BoxFuture<'static, $Out>;
 
             #[cfg(not(feature = "nightly"))]
             pub(crate) fn def<$T>($( $arg: $ArgTy ),*) -> $i<$T>
@@ -379,12 +379,23 @@ macro_rules! download_forward {
 
             type Fut<'dst> = <$T as $crate::net::Download>::Fut<'dst>;
 
+            #[cfg(not(target_arch = "wasm32"))]
             fn download_file<'dst>(
                 &self,
                 path: &'dst str,
                 destination: &'dst mut (dyn tokio::io::AsyncWrite
                                + core::marker::Unpin
                                + core::marker::Send),
+            ) -> Self::Fut<'dst> {
+                let $this = self;
+                ($inner).download_file(path, destination)
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            fn download_file<'dst>(
+                &self,
+                path: &'dst str,
+                destination: &'dst mut (dyn tokio::io::AsyncWrite + core::marker::Unpin),
             ) -> Self::Fut<'dst> {
                 let $this = self;
                 ($inner).download_file(path, destination)
@@ -1803,6 +1814,7 @@ macro_rules! requester_forward {
     };// END BLOCK requester_forward_at_method
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 // waffle: efficiency is not important here, and I don't want to rewrite this
 #[allow(clippy::format_collect)]

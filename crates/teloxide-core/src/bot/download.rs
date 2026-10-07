@@ -1,16 +1,17 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use bytes::Bytes;
-use futures::{future::BoxFuture, stream::BoxStream, FutureExt, StreamExt};
+use futures::StreamExt;
 
-use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-};
+use tokio::io::AsyncWrite;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     bot::Bot,
     net::{self, Download},
+    send::{BoxFuture, BoxStream},
     DownloadError,
 };
 
@@ -21,6 +22,7 @@ impl Download for Bot {
     // another hand written `Future`. (waffle)
     type Fut<'dst> = BoxFuture<'dst, Result<(), Self::Err<'dst>>>;
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn download_file<'dst>(
         &self,
         path: &'dst str,
@@ -33,17 +35,33 @@ impl Download for Bot {
         // If path is absolute and api_url contains localhost, it is pretty clear there
         // is a local TBA server with --local option, we can just copy the file
         if is_localhost && Path::new(&path).is_absolute() {
-            return copy_file(path, destination).boxed();
+            return Box::pin(copy_file(path, destination));
         }
 
-        net::download_file(
+        Box::pin(net::download_file(
             &self.client,
             reqwest::Url::clone(&*self.api_url),
             &self.token,
             path,
             destination,
-        )
-        .boxed()
+        ))
+    }
+
+    // no local bot api server fast-path on wasm32 (no filesystem); always
+    // download over the network.
+    #[cfg(target_arch = "wasm32")]
+    fn download_file<'dst>(
+        &self,
+        path: &'dst str,
+        destination: &'dst mut (dyn AsyncWrite + Unpin),
+    ) -> Self::Fut<'dst> {
+        Box::pin(net::download_file(
+            &self.client,
+            reqwest::Url::clone(&*self.api_url),
+            &self.token,
+            path,
+            destination,
+        ))
     }
 
     type StreamErr = reqwest::Error;
@@ -51,22 +69,24 @@ impl Download for Bot {
     type Stream = BoxStream<'static, Result<Bytes, Self::StreamErr>>;
 
     fn download_file_stream(&self, path: &str) -> Self::Stream {
-        net::download_file_stream(
-            &self.client,
-            reqwest::Url::clone(&*self.api_url),
-            &self.token,
-            path,
+        Box::pin(
+            net::download_file_stream(
+                &self.client,
+                reqwest::Url::clone(&*self.api_url),
+                &self.token,
+                path,
+            )
+            .map(|res| res.map_err(crate::errors::hide_token)),
         )
-        .map(|res| res.map_err(crate::errors::hide_token))
-        .boxed()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn copy_file<'o, D>(path: &'o str, dst: &'o mut D) -> Result<(), DownloadError>
 where
     D: ?Sized + AsyncWrite + Unpin,
 {
-    let mut src_file = File::open(path).await?;
+    let mut src_file = tokio::fs::File::open(path).await?;
 
     let mut buffer = [0; 128 * 1024];
     loop {

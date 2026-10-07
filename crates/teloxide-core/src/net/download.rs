@@ -1,15 +1,11 @@
-use std::{future::Future, sync::Arc};
+use std::{future::Future, pin::pin, sync::Arc};
 
 use bytes::Bytes;
-use futures::{
-    future::{ready, Either},
-    stream::{once, unfold},
-    FutureExt, Stream, StreamExt,
-};
+use futures::{FutureExt, Stream, TryFutureExt, TryStreamExt};
 use reqwest::{Client, Response, Url};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::{errors::DownloadError, net::file_url};
+use crate::{errors::DownloadError, net::file_url, send::MaybeSend};
 
 /// A trait for downloading files from Telegram.
 pub trait Download {
@@ -17,7 +13,7 @@ pub trait Download {
     type Err<'dst>;
 
     /// A future returned from [`download_file`](Self::download_file).
-    type Fut<'dst>: Future<Output = Result<(), Self::Err<'dst>>> + Send;
+    type Fut<'dst>: Future<Output = Result<(), Self::Err<'dst>>> + MaybeSend;
 
     // NOTE: We currently only allow borrowing `dst` in the future,
     //       however we could also allow borrowing `self` or `path`.
@@ -55,10 +51,20 @@ pub trait Download {
     ///
     /// [`GetFile`]: crate::payloads::GetFile
     /// [`download_file_stream`]: Self::download_file_stream
+    #[cfg(not(target_arch = "wasm32"))]
     fn download_file<'dst>(
         &self,
         path: &'dst str,
         destination: &'dst mut (dyn AsyncWrite + Unpin + Send),
+    ) -> Self::Fut<'dst>;
+
+    /// [`GetFile`]: crate::payloads::GetFile
+    /// [`download_file_stream`]: Self::download_file_stream
+    #[cfg(target_arch = "wasm32")]
+    fn download_file<'dst>(
+        &self,
+        path: &'dst str,
+        destination: &'dst mut (dyn AsyncWrite + Unpin),
     ) -> Self::Fut<'dst>;
 
     /// An error returned from
@@ -68,7 +74,7 @@ pub trait Download {
     /// A stream returned from [`download_file_stream`].
     ///
     ///[`download_file_stream`]: (Self::download_file_stream)
-    type Stream: Stream<Item = Result<Bytes, Self::StreamErr>> + Send;
+    type Stream: Stream<Item = Result<Bytes, Self::StreamErr>> + MaybeSend;
 
     /// Download a file from Telegram as [`Stream`].
     ///
@@ -99,15 +105,17 @@ pub fn download_file<'o, D>(
 where
     D: ?Sized + AsyncWrite + Unpin,
 {
-    client.get(file_url(api_url, token, path)).send().then(move |r| async move {
-        let mut res = r?.error_for_status()?;
+    let req = client.get(file_url(api_url, token, path)).send();
 
-        while let Some(chunk) = res.chunk().await? {
+    async move {
+        let mut stream = pin!(req.await?.error_for_status()?.bytes_stream());
+
+        while let Some(chunk) = stream.try_next().await? {
             dst.write_all(&chunk).await.map_err(Arc::new)?;
         }
 
         Ok(())
-    })
+    }
 }
 
 /// Download a file from Telegram as [`Stream`].
@@ -121,16 +129,10 @@ pub fn download_file_stream(
     token: &str,
     path: &str,
 ) -> impl Stream<Item = reqwest::Result<Bytes>> + 'static {
-    client.get(file_url(api_url, token, path)).send().into_stream().flat_map(|res| {
-        match res.and_then(Response::error_for_status) {
-            Ok(res) => Either::Left(unfold(res, |mut res| async {
-                match res.chunk().await {
-                    Err(err) => Some((Err(err), res)),
-                    Ok(Some(c)) => Some((Ok(c), res)),
-                    Ok(None) => None,
-                }
-            })),
-            Err(err) => Either::Right(once(ready(Err(err)))),
-        }
-    })
+    client
+        .get(file_url(api_url, token, path))
+        .send()
+        .map(|res| res.and_then(Response::error_for_status))
+        .map_ok(Response::bytes_stream)
+        .try_flatten_stream()
 }

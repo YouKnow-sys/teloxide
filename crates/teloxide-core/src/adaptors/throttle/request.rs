@@ -2,19 +2,17 @@ use std::{
     future::{Future, IntoFuture},
     pin::Pin,
     sync::Arc,
-    time::Instant,
 };
 
-use futures::{
-    future::BoxFuture,
-    task::{Context, Poll},
-};
+use futures::task::{Context, Poll};
 use tokio::sync::mpsc;
 
 use crate::{
     adaptors::throttle::{channel, ChatIdHash, FreezeUntil, RequestLock},
     errors::AsResponseParameters,
     requests::{HasPayload, Output, Request},
+    rt::Instant,
+    send::BoxFuture,
 };
 
 /// Request returned by [`Throttling`](crate::adaptors::Throttle) methods.
@@ -212,7 +210,7 @@ where
 
             if retry {
                 log::warn!("Freezing, before retrying: {retry_after:?}");
-                tokio::time::sleep_until(until.into()).await;
+                crate::rt::sleep_until(until).await;
             }
         }
 

@@ -94,7 +94,7 @@ where
     T: DeserializeOwned + 'static,
 {
     if response.status().is_server_error() {
-        tokio::time::sleep(DELAY_ON_SERVER_ERROR).await;
+        crate::rt::sleep(DELAY_ON_SERVER_ERROR).await;
     }
 
     let text = response.text().await?;

@@ -18,84 +18,80 @@ use std::future::Future;
 use reqwest::multipart::Form;
 use serde::Serialize;
 
-use crate::requests::MultipartPayload;
+use crate::{requests::MultipartPayload, types::InputFile};
 use error::Error;
 use serializers::MultipartSerializer;
 
 /// Serializes given value into [`Form`] **taking all input files out**.
 ///
+/// The returned future reads/opens the input files and can fail with an
+/// [`io::Error`] (e.g. when reading an `InputFile::read` fails on `wasm32`,
+/// where request bodies can't carry errors).
+///
 /// [`Form`]:  reqwest::multipart::Form
-pub(crate) fn to_form<T>(val: &mut T) -> Result<impl Future<Output = Form>, Error>
+pub(crate) fn to_form<T>(val: &mut T) -> Result<impl Future<Output = Result<Form, Error>>, Error>
 where
     T: Serialize + MultipartPayload,
 {
-    let mut form = val.serialize(MultipartSerializer::new())?;
+    let form = val.serialize(MultipartSerializer::new())?;
 
-    let mut vec = Vec::with_capacity(1);
-    val.move_files(&mut |f| vec.push(f));
-    let iter = vec.into_iter();
+    let mut files = Vec::with_capacity(1);
+    val.move_files(&mut |f| files.push(f));
 
-    let fut = async move {
-        for file in iter {
-            if file.needs_attach() {
-                let id = file.id().to_owned();
-                if let Some(part) = file.into_part() {
-                    form = form.part(id, part.await);
-                }
-            }
-        }
-
-        form
-    };
-
-    Ok(fut)
+    Ok(attach_files(form, files))
 }
 
 /// Serializes given value into [`Form`].
 ///
+/// The returned future reads/opens the input files and can fail with an
+/// [`io::Error`] (see [`to_form`]).
+///
 /// [`Form`]:  reqwest::multipart::Form
-pub(crate) fn to_form_ref<T: ?Sized>(val: &T) -> Result<impl Future<Output = Form>, Error>
+pub(crate) fn to_form_ref<T: ?Sized>(
+    val: &T,
+) -> Result<impl Future<Output = Result<Form, Error>>, Error>
 where
     T: Serialize + MultipartPayload,
 {
-    let mut form = val.serialize(MultipartSerializer::new())?;
-    let mut vec = Vec::with_capacity(1);
-    val.copy_files(&mut |f| vec.push(f));
+    let form = val.serialize(MultipartSerializer::new())?;
 
-    let iter = vec.into_iter();
+    let mut files = Vec::with_capacity(1);
+    val.copy_files(&mut |f| files.push(f));
 
-    let fut = async move {
-        for file in iter {
-            if file.needs_attach() {
-                let id = file.id().to_owned();
-                if let Some(part) = file.into_part() {
-                    form = form.part(id, part.await);
-                }
-            }
+    Ok(attach_files(form, files))
+}
+
+/// Adds a part to `form` for every file that needs to be attached.
+async fn attach_files(mut form: Form, files: Vec<InputFile>) -> Result<Form, Error> {
+    for file in files {
+        if file.needs_attach() {
+            let id = file.id().to_owned();
+            form = form.part(id, file.into_part().await?);
         }
+    }
 
-        form
-    };
-
-    Ok(fut)
+    Ok(form)
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_arch = "wasm32"))]
     use tokio::fs::File;
 
     use super::to_form_ref;
+    #[cfg(not(target_arch = "wasm32"))]
+    use crate::types::{
+        InputMedia, InputMediaAnimation, InputMediaAudio, InputMediaDocument, InputMediaPhoto,
+        InputMediaVideo, InputSticker, ParseMode, StickerFormat, UserId,
+    };
     use crate::{
         payloads::{self, setters::*},
-        types::{
-            ChatId, InputFile, InputMedia, InputMediaAnimation, InputMediaAudio,
-            InputMediaDocument, InputMediaPhoto, InputMediaVideo, InputSticker, MessageEntity,
-            MessageEntityKind, ParseMode, StickerFormat, UserId,
-        },
+        types::{ChatId, InputFile, MessageEntity, MessageEntityKind},
     };
 
     // https://github.com/teloxide/teloxide/issues/473
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn issue_473() {
         to_form_ref(
             &payloads::SendPhoto::new(ChatId(0), InputFile::file_id("0".into())).caption_entities(
@@ -103,9 +99,11 @@ mod tests {
             ),
         )
         .unwrap()
-        .await;
+        .await
+        .unwrap();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn test_send_media_group() {
         const CAPTION: &str = "caption";
@@ -141,9 +139,11 @@ mod tests {
             ],
         ))
         .unwrap()
-        .await;
+        .await
+        .unwrap();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn test_add_sticker_to_set() {
         to_form_ref(&payloads::AddStickerToSet::new(
@@ -161,9 +161,11 @@ mod tests {
             },
         ))
         .unwrap()
-        .await;
+        .await
+        .unwrap();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn test_send_animation() {
         to_form_ref(
@@ -177,9 +179,11 @@ mod tests {
             )),
         )
         .unwrap()
-        .await;
+        .await
+        .unwrap();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn entities() -> impl Iterator<Item = MessageEntity> {
         <_>::into_iter([
             MessageEntity::new(MessageEntityKind::Url, 0, 0),

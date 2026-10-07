@@ -1909,6 +1909,7 @@ where
 //     forward_all! { fwd_either, fty_either }
 // }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 // waffle: efficiency is not important here, and I don't want to rewrite this
 #[allow(clippy::format_collect)]

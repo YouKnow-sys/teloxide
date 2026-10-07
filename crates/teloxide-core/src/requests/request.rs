@@ -3,7 +3,10 @@ use std::future::{Future, IntoFuture};
 // use either::Either;
 // use futures::future;
 
-use crate::requests::{HasPayload, Output};
+use crate::{
+    requests::{HasPayload, Output},
+    send::MaybeSend,
+};
 
 /// A ready-to-send Telegram request.
 // FIXME(waffle): Write better doc for the trait
@@ -30,13 +33,13 @@ where
     type Err: std::error::Error + Send;
 
     /// The type of the future returned by the [`send`](Request::send) method.
-    type Send: Future<Output = Result<Output<Self>, Self::Err>> + Send;
+    type Send: Future<Output = Result<Output<Self>, Self::Err>> + MaybeSend;
 
     /// A type of the future returned by the [`send_ref`](Request::send_ref)
     /// method.
     // Note: it intentionally forbids borrowing from `self` though we couldn't allow
     // borrowing without GATs anyway.
-    type SendRef: Future<Output = Result<Output<Self>, Self::Err>> + Send;
+    type SendRef: Future<Output = Result<Output<Self>, Self::Err>> + MaybeSend;
 
     /// Send this request.
     ///

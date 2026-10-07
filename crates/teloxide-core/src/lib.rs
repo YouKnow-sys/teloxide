@@ -54,6 +54,25 @@
 //! [`CacheMe`]: adaptors::CacheMe
 //! [`native-tls`]: https://docs.rs/native-tls
 //! [`rustls`]: https://docs.rs/rustls
+//!
+//! ## WebAssembly
+//!
+//! This crate compiles for `wasm32-unknown-unknown` (browser/JS environments),
+//! using [`reqwest`]'s WebAssembly support to send requests.
+//!
+//! Differences from native targets:
+//!
+//! - Futures are not required to be `Send`; everything runs on a single thread.
+//! - Proxies and client timeouts can't be configured: `TELOXIDE_PROXY` is
+//!   ignored and the default client settings are not applied.
+//! - TLS features have no effect, the host handles TLS.
+//! - [`InputFile::file`] and file-system downloads are unavailable. Use
+//!   [`InputFile::memory`] or [`InputFile::read`] instead.
+//!
+//! [`reqwest`]: https://docs.rs/reqwest
+//! [`InputFile::file`]: types::InputFile::file
+//! [`InputFile::memory`]: types::InputFile::memory
+//! [`InputFile::read`]: types::InputFile::read
 
 #![doc(
     // FIXME(waffle): use github
@@ -118,6 +137,10 @@ pub mod net;
 pub mod payloads;
 pub mod prelude;
 pub mod requests;
+#[doc(hidden)]
+pub mod rt;
+#[doc(hidden)]
+pub mod send;
 pub mod types;
 
 // reexported
@@ -127,5 +150,5 @@ mod bot;
 mod serde_multipart;
 mod util;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod codegen;

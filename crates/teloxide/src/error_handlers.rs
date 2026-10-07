@@ -1,22 +1,24 @@
 //! Convenient error handling.
 
-use futures::future::BoxFuture;
 use std::{convert::Infallible, fmt::Debug, future::Future, sync::Arc};
+
+use teloxide_core::send::{BoxFuture, MaybeSend, MaybeSync};
 
 /// An asynchronous handler of an error.
 ///
 /// See [the module-level documentation for the design
 /// overview](crate::dispatching).
-pub trait ErrorHandler<E> {
-    #[must_use]
+///
+/// The supertraits are `Send + Sync` on native targets and vanish on `wasm32`.
+pub trait ErrorHandler<E>: MaybeSend + MaybeSync {
     fn handle_error(self: Arc<Self>, error: E) -> BoxFuture<'static, ()>;
 }
 
 impl<E, F, Fut> ErrorHandler<E> for F
 where
-    F: Fn(E) -> Fut + Send + Sync + 'static,
+    F: Fn(E) -> Fut + MaybeSend + MaybeSync + 'static,
     E: Send + 'static,
-    Fut: Future<Output = ()> + Send,
+    Fut: Future<Output = ()> + MaybeSend,
 {
     fn handle_error(self: Arc<Self>, error: E) -> BoxFuture<'static, ()> {
         Box::pin(async move { self(error).await })
@@ -52,15 +54,13 @@ where
 /// # }
 /// ```
 pub trait OnError<E> {
-    #[must_use]
     fn on_error<'a, Eh>(self, eh: Arc<Eh>) -> BoxFuture<'a, ()>
     where
         Self: 'a,
-        Eh: ErrorHandler<E> + Send + Sync,
+        Eh: ErrorHandler<E>,
         Arc<Eh>: 'a;
 
     /// A shortcut for `.on_error(LoggingErrorHandler::new())`.
-    #[must_use]
     fn log_on_error<'a>(self) -> BoxFuture<'a, ()>
     where
         Self: Sized + 'a,
@@ -78,7 +78,7 @@ where
     fn on_error<'a, Eh>(self, eh: Arc<Eh>) -> BoxFuture<'a, ()>
     where
         Self: 'a,
-        Eh: ErrorHandler<E> + Send + Sync,
+        Eh: ErrorHandler<E>,
         Arc<Eh>: 'a,
     {
         Box::pin(async move {

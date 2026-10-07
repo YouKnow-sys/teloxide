@@ -42,6 +42,7 @@ jobs:
       - fmt
       - test
       - check-examples
+      - wasm
       - clippy
       - doc
 
@@ -139,7 +140,7 @@ jobs:
         if: ${{ matrix.rust == 'msrv' }}
         run: |
             exit 0
-        
+
 
       # NB. Don't test (build) examples so we can use non-msrv features in them (--tests/--doc)
       - name: Compile
@@ -194,6 +195,48 @@ jobs:
       - name: Check with no default features
         run: |
           cargo +stable check --no-default-features
+
+  wasm:
+    name: wasm32
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check teloxide-core
+        run: cargo check -p teloxide-core --target wasm32-unknown-unknown
+
+      - name: Check teloxide
+        run: >
+          cargo check -p teloxide --target wasm32-unknown-unknown
+          --no-default-features --features macros,throttle,cache-me,trace-adaptor,erased,tracing
+
+      - name: Clippy
+        run: |
+          cargo clippy -p teloxide-core --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy -p teloxide --target wasm32-unknown-unknown \
+            --no-default-features --features macros,throttle,cache-me,trace-adaptor,erased,tracing \
+            -- -D warnings
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Test teloxide-core (node)
+        run: wasm-pack test --node -- crates/teloxide-core --lib --features throttle
+
+      - name: Test teloxide (node)
+        run: >
+          wasm-pack test --node -- crates/teloxide --lib --no-default-features --features macros
 
   clippy:
     name: Run linter

@@ -17,7 +17,8 @@ pub fn exponential_backoff_strategy(error_count: u32) -> Duration {
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn test_exponential_backoff_strategy() {
         let cases = [
             (1, Duration::from_secs(2)),

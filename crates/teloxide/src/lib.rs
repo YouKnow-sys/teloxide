@@ -98,6 +98,18 @@
 //!
 //! For more info about dptree, please check out [_this guide_] on it!
 //!
+//! ## WebAssembly
+//!
+//! This crate compiles for `wasm32-unknown-unknown` (browser/JS environments).
+//! Build it with `--no-default-features` (the default features pull in the
+//! `^C` handler, which needs OS signals). The `macros`, `throttle`,
+//! `cache-me`, `trace-adaptor`, `erased` and `tracing` features are
+//! wasm-compatible; `webhooks`, the storage features and `ctrlc_handler` are
+//! not.
+//!
+//! On `wasm32` everything runs on a single thread, so futures aren't required
+//! to be `Send` and handler closures may be `!Send`.
+//!
 //! [update kinds]: crate::types::UpdateKind
 //! [message kinds]: crate::types::MessageKind
 //! [`Update`]: crate::types::Update

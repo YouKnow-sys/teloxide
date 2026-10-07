@@ -12,11 +12,8 @@ use crate::{
 
 use dptree::di::DependencyMap;
 use either::Either;
-use futures::{
-    future::{self, BoxFuture},
-    stream::FuturesUnordered,
-    FutureExt as _, StreamExt as _,
-};
+use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
+use teloxide_core::{rt, send::BoxFuture};
 use tokio_stream::wrappers::ReceiverStream;
 
 use std::{
@@ -41,7 +38,7 @@ pub struct DispatcherBuilder<R, Err, Key> {
     dependencies: DependencyMap,
     handler: Arc<UpdateHandler<Err>>,
     default_handler: DefaultHandler,
-    error_handler: Arc<dyn ErrorHandler<Err> + Send + Sync>,
+    error_handler: Arc<dyn ErrorHandler<Err>>,
     ctrlc_handler: bool,
     distribution_f: fn(&Update) -> Option<Key>,
     worker_queue_size: usize,
@@ -76,7 +73,7 @@ where
     ///
     /// By default, it is [`LoggingErrorHandler`].
     #[must_use]
-    pub fn error_handler(self, handler: Arc<dyn ErrorHandler<Err> + Send + Sync>) -> Self {
+    pub fn error_handler(self, handler: Arc<dyn ErrorHandler<Err>>) -> Self {
         Self { error_handler: handler, ..self }
     }
 
@@ -246,7 +243,7 @@ where
             max_number_of_active_workers: Default::default(),
         };
 
-        #[cfg(feature = "ctrlc_handler")]
+        #[cfg(all(feature = "ctrlc_handler", not(target_arch = "wasm32")))]
         {
             if ctrlc_handler {
                 let mut dp = dp;
@@ -287,14 +284,14 @@ pub struct Dispatcher<R, Err, Key> {
     // The default TX part that consume updates concurrently.
     default_worker: Option<Worker>,
 
-    error_handler: Arc<dyn ErrorHandler<Err> + Send + Sync>,
+    error_handler: Arc<dyn ErrorHandler<Err>>,
 
     state: ShutdownToken,
 }
 
 struct Worker {
     tx: tokio::sync::mpsc::Sender<Update>,
-    handle: tokio::task::JoinHandle<()>,
+    handle: rt::JoinHandle<()>,
     is_waiting: Arc<AtomicBool>,
 }
 
@@ -304,7 +301,11 @@ struct Worker {
 /// A handler that processes updates from Telegram.
 pub type UpdateHandler<Err> = dptree::Handler<'static, Result<(), Err>, DpHandlerDescription>;
 
+// `Send`/`Sync` can't be expressed via `MaybeSend` in `dyn` types.
+#[cfg(not(target_arch = "wasm32"))]
 type DefaultHandler = Arc<dyn Fn(Arc<Update>) -> BoxFuture<'static, ()> + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+type DefaultHandler = Arc<dyn Fn(Arc<Update>) -> BoxFuture<'static, ()>>;
 
 impl<R, Err> Dispatcher<R, Err, DefaultKey>
 where
@@ -577,10 +578,10 @@ where
 }
 
 impl<R, Err, Key> Dispatcher<R, Err, Key> {
-    #[cfg(feature = "ctrlc_handler")]
+    #[cfg(all(feature = "ctrlc_handler", not(target_arch = "wasm32")))]
     fn setup_ctrlc_handler_inner(&mut self) {
         let token = self.state.clone();
-        tokio::spawn(async move {
+        rt::spawn(async move {
             loop {
                 tokio::signal::ctrl_c().await.expect("Failed to listen for ^C");
 
@@ -603,7 +604,7 @@ fn spawn_worker<Err>(
     deps: DependencyMap,
     handler: Arc<UpdateHandler<Err>>,
     default_handler: DefaultHandler,
-    error_handler: Arc<dyn ErrorHandler<Err> + Send + Sync>,
+    error_handler: Arc<dyn ErrorHandler<Err>>,
     current_number_of_active_workers: Arc<AtomicU32>,
     max_number_of_active_workers: Arc<AtomicU32>,
     queue_size: usize,
@@ -617,7 +618,7 @@ where
 
     let deps = Arc::new(deps);
 
-    let handle = tokio::spawn(async move {
+    let handle = rt::spawn(async move {
         while let Some(update) = rx.recv().await {
             is_waiting_local.store(false, Ordering::Relaxed);
             {
@@ -644,7 +645,7 @@ fn spawn_default_worker<Err>(
     deps: DependencyMap,
     handler: Arc<UpdateHandler<Err>>,
     default_handler: DefaultHandler,
-    error_handler: Arc<dyn ErrorHandler<Err> + Send + Sync>,
+    error_handler: Arc<dyn ErrorHandler<Err>>,
     queue_size: usize,
 ) -> Worker
 where
@@ -654,13 +655,29 @@ where
 
     let deps = Arc::new(deps);
 
-    let handle = tokio::spawn(ReceiverStream::new(rx).for_each_concurrent(None, move |update| {
+    // `for_each_concurrent` requires `Send` futures, which handler futures
+    // aren't on wasm32; there each update is (concurrently) `spawn_local`ed
+    // instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    let handle = rt::spawn(ReceiverStream::new(rx).for_each_concurrent(None, move |update| {
         let deps = Arc::clone(&deps);
         let handler = Arc::clone(&handler);
         let default_handler = Arc::clone(&default_handler);
         let error_handler = Arc::clone(&error_handler);
 
         handle_update(update, deps, handler, default_handler, error_handler)
+    }));
+    #[cfg(target_arch = "wasm32")]
+    let handle = rt::spawn(ReceiverStream::new(rx).for_each(move |update| {
+        let deps = Arc::clone(&deps);
+        let handler = Arc::clone(&handler);
+        let default_handler = Arc::clone(&default_handler);
+        let error_handler = Arc::clone(&error_handler);
+
+        async move {
+            let _ = rt::spawn(handle_update(update, deps, handler, default_handler, error_handler))
+                .await;
+        }
     }));
 
     Worker { tx, handle, is_waiting: Arc::new(AtomicBool::new(true)) }
@@ -671,7 +688,7 @@ async fn handle_update<Err>(
     deps: Arc<DependencyMap>,
     handler: Arc<UpdateHandler<Err>>,
     default_handler: DefaultHandler,
-    error_handler: Arc<dyn ErrorHandler<Err> + Send + Sync>,
+    error_handler: Arc<dyn ErrorHandler<Err>>,
 ) where
     Err: Send + Sync + 'static,
 {
@@ -694,6 +711,7 @@ fn either<L, R>(x: future::Either<L, R>) -> Either<L, R> {
         future::Either::Right(r) => Either::Right(r),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
@@ -702,9 +720,10 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_tokio_spawn() {
-        tokio::spawn(async {
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn test_spawn() {
+        rt::spawn(async {
             // Just check that this code compiles.
             if false {
                 Dispatcher::<_, Infallible, _>::builder(Bot::new(""), dptree::entry())

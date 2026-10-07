@@ -11,7 +11,7 @@ use std::{
 };
 
 use futures::{ready, stream::Stream};
-use tokio::time::{sleep, Sleep};
+use teloxide_core::rt::{sleep, Sleep};
 
 use teloxide_core::errors::AsResponseParameters;
 
@@ -507,6 +507,7 @@ impl<B: Requester> Stream for PollingStream<'_, B> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn polling_is_send() {
     let bot = crate::Bot::new("TOKEN");

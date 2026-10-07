@@ -143,7 +143,8 @@ where
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn test_erased() {
         let chat_id = ChatId(123);
 

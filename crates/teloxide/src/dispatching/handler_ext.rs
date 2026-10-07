@@ -259,7 +259,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn test_filter_command() {
         let h = dptree::entry()
             .branch(Update::filter_message().filter_command::<Cmd>().endpoint(|| async {}));
@@ -278,7 +279,8 @@ mod tests {
         assert!(result.is_break());
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn test_filter_mention_command() {
         let h = dptree::entry()
             .branch(Update::filter_message().filter_mention_command::<Cmd>().endpoint(|| async {}));

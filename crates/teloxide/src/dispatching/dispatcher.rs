@@ -13,7 +13,7 @@ use crate::{
 use dptree::di::DependencyMap;
 use either::Either;
 use futures::{future, stream::FuturesUnordered, FutureExt as _, StreamExt as _};
-use teloxide_core::{rt, send::BoxFuture};
+use teloxide_core::{rt, send::MaybeSendBoxFuture};
 use tokio_stream::wrappers::ReceiverStream;
 
 use std::{
@@ -303,9 +303,9 @@ pub type UpdateHandler<Err> = dptree::Handler<'static, Result<(), Err>, DpHandle
 
 // `Send`/`Sync` can't be expressed via `MaybeSend` in `dyn` types.
 #[cfg(not(target_arch = "wasm32"))]
-type DefaultHandler = Arc<dyn Fn(Arc<Update>) -> BoxFuture<'static, ()> + Send + Sync>;
+type DefaultHandler = Arc<dyn Fn(Arc<Update>) -> MaybeSendBoxFuture<'static, ()> + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
-type DefaultHandler = Arc<dyn Fn(Arc<Update>) -> BoxFuture<'static, ()>>;
+type DefaultHandler = Arc<dyn Fn(Arc<Update>) -> MaybeSendBoxFuture<'static, ()>>;
 
 impl<R, Err> Dispatcher<R, Err, DefaultKey>
 where

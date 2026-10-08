@@ -2,7 +2,7 @@
 
 use std::{convert::Infallible, fmt::Debug, future::Future, sync::Arc};
 
-use teloxide_core::send::{BoxFuture, MaybeSend, MaybeSync};
+use teloxide_core::send::{MaybeSend, MaybeSendBoxFuture, MaybeSync};
 
 /// An asynchronous handler of an error.
 ///
@@ -11,7 +11,7 @@ use teloxide_core::send::{BoxFuture, MaybeSend, MaybeSync};
 ///
 /// The supertraits are `Send + Sync` on native targets and vanish on `wasm32`.
 pub trait ErrorHandler<E>: MaybeSend + MaybeSync {
-    fn handle_error(self: Arc<Self>, error: E) -> BoxFuture<'static, ()>;
+    fn handle_error(self: Arc<Self>, error: E) -> MaybeSendBoxFuture<'static, ()>;
 }
 
 impl<E, F, Fut> ErrorHandler<E> for F
@@ -20,7 +20,7 @@ where
     E: Send + 'static,
     Fut: Future<Output = ()> + MaybeSend,
 {
-    fn handle_error(self: Arc<Self>, error: E) -> BoxFuture<'static, ()> {
+    fn handle_error(self: Arc<Self>, error: E) -> MaybeSendBoxFuture<'static, ()> {
         Box::pin(async move { self(error).await })
     }
 }
@@ -54,14 +54,14 @@ where
 /// # }
 /// ```
 pub trait OnError<E> {
-    fn on_error<'a, Eh>(self, eh: Arc<Eh>) -> BoxFuture<'a, ()>
+    fn on_error<'a, Eh>(self, eh: Arc<Eh>) -> MaybeSendBoxFuture<'a, ()>
     where
         Self: 'a,
         Eh: ErrorHandler<E>,
         Arc<Eh>: 'a;
 
     /// A shortcut for `.on_error(LoggingErrorHandler::new())`.
-    fn log_on_error<'a>(self) -> BoxFuture<'a, ()>
+    fn log_on_error<'a>(self) -> MaybeSendBoxFuture<'a, ()>
     where
         Self: Sized + 'a,
         E: Debug,
@@ -75,7 +75,7 @@ where
     T: Send,
     E: Send,
 {
-    fn on_error<'a, Eh>(self, eh: Arc<Eh>) -> BoxFuture<'a, ()>
+    fn on_error<'a, Eh>(self, eh: Arc<Eh>) -> MaybeSendBoxFuture<'a, ()>
     where
         Self: 'a,
         Eh: ErrorHandler<E>,
@@ -113,7 +113,7 @@ impl IgnoringErrorHandler {
 }
 
 impl<E> ErrorHandler<E> for IgnoringErrorHandler {
-    fn handle_error(self: Arc<Self>, _: E) -> BoxFuture<'static, ()> {
+    fn handle_error(self: Arc<Self>, _: E) -> MaybeSendBoxFuture<'static, ()> {
         Box::pin(async {})
     }
 }
@@ -159,7 +159,7 @@ impl IgnoringErrorHandlerSafe {
 
 #[allow(unreachable_code)]
 impl ErrorHandler<Infallible> for IgnoringErrorHandlerSafe {
-    fn handle_error(self: Arc<Self>, _: Infallible) -> BoxFuture<'static, ()> {
+    fn handle_error(self: Arc<Self>, _: Infallible) -> MaybeSendBoxFuture<'static, ()> {
         Box::pin(async {})
     }
 }
@@ -205,7 +205,7 @@ impl<E> ErrorHandler<E> for LoggingErrorHandler
 where
     E: Debug,
 {
-    fn handle_error(self: Arc<Self>, error: E) -> BoxFuture<'static, ()> {
+    fn handle_error(self: Arc<Self>, error: E) -> MaybeSendBoxFuture<'static, ()> {
         log::error!("{text}: {:?}", error, text = self.text);
         Box::pin(async {})
     }

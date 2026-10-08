@@ -12,7 +12,7 @@ use crate::{
     errors::AsResponseParameters,
     requests::{HasPayload, Output, Request},
     rt::Instant,
-    send::BoxFuture,
+    send::MaybeSendBoxFuture,
 };
 
 /// Request returned by [`Throttling`](crate::adaptors::Throttle) methods.
@@ -26,7 +26,9 @@ pub struct ThrottlingRequest<R: HasPayload> {
 
 /// Future returned by [`ThrottlingRequest`]s.
 #[pin_project::pin_project]
-pub struct ThrottlingSend<R: Request>(#[pin] BoxFuture<'static, Result<Output<R>, R::Err>>);
+pub struct ThrottlingSend<R: Request>(
+    #[pin] MaybeSendBoxFuture<'static, Result<Output<R>, R::Err>>,
+);
 
 enum ShareableRequest<R> {
     Shared(Arc<R>),

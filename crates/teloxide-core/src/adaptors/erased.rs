@@ -6,7 +6,7 @@ use crate::{
     errors::AsResponseParameters,
     payloads::*,
     requests::{HasPayload, Output, Payload, Request, Requester},
-    send::BoxFuture,
+    send::MaybeSendBoxFuture,
     types::*,
 };
 
@@ -77,9 +77,9 @@ where
 {
     type Err = E;
 
-    type Send = BoxFuture<'a, Result<Output<Self>, Self::Err>>;
+    type Send = MaybeSendBoxFuture<'a, Result<Output<Self>, Self::Err>>;
 
-    type SendRef = BoxFuture<'a, Result<Output<Self>, Self::Err>>;
+    type SendRef = MaybeSendBoxFuture<'a, Result<Output<Self>, Self::Err>>;
 
     fn send(self) -> Self::Send {
         self.inner.send_box()
@@ -110,9 +110,9 @@ where
 trait ErasableRequest<'a>: HasPayload {
     type Err: std::error::Error + Send;
 
-    fn send_box(self: Box<Self>) -> BoxFuture<'a, Result<Output<Self>, Self::Err>>;
+    fn send_box(self: Box<Self>) -> MaybeSendBoxFuture<'a, Result<Output<Self>, Self::Err>>;
 
-    fn send_ref(&self) -> BoxFuture<'a, Result<Output<Self>, Self::Err>>;
+    fn send_ref(&self) -> MaybeSendBoxFuture<'a, Result<Output<Self>, Self::Err>>;
 }
 
 impl<'a, R> ErasableRequest<'a> for R
@@ -123,11 +123,11 @@ where
 {
     type Err = R::Err;
 
-    fn send_box(self: Box<Self>) -> BoxFuture<'a, Result<Output<Self>, Self::Err>> {
+    fn send_box(self: Box<Self>) -> MaybeSendBoxFuture<'a, Result<Output<Self>, Self::Err>> {
         Box::pin(self.send())
     }
 
-    fn send_ref(&self) -> BoxFuture<'a, Result<Output<Self>, Self::Err>> {
+    fn send_ref(&self) -> MaybeSendBoxFuture<'a, Result<Output<Self>, Self::Err>> {
         Box::pin(Request::send_ref(self))
     }
 }

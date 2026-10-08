@@ -1,6 +1,5 @@
 use super::{serializer::Serializer, Storage};
 use deadpool_redis::{redis, CreatePoolError, PoolError, Runtime};
-use futures::future::BoxFuture;
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
@@ -8,6 +7,7 @@ use std::{
     fmt::{Debug, Display},
     sync::Arc,
 };
+use teloxide_core::send::MaybeSendBoxFuture;
 use teloxide_core::types::ChatId;
 use thiserror::Error;
 
@@ -63,7 +63,7 @@ where
     fn remove_dialogue(
         self: Arc<Self>,
         ChatId(chat_id): ChatId,
-    ) -> BoxFuture<'static, Result<(), Self::Error>> {
+    ) -> MaybeSendBoxFuture<'static, Result<(), Self::Error>> {
         Box::pin(async move {
             let mut conn = self.pool.get().await?;
 
@@ -89,7 +89,7 @@ where
         self: Arc<Self>,
         ChatId(chat_id): ChatId,
         dialogue: D,
-    ) -> BoxFuture<'static, Result<(), Self::Error>> {
+    ) -> MaybeSendBoxFuture<'static, Result<(), Self::Error>> {
         Box::pin(async move {
             let dialogue =
                 self.serializer.serialize(&dialogue).map_err(RedisStorageError::SerdeError)?;
@@ -101,7 +101,7 @@ where
     fn get_dialogue(
         self: Arc<Self>,
         ChatId(chat_id): ChatId,
-    ) -> BoxFuture<'static, Result<Option<D>, Self::Error>> {
+    ) -> MaybeSendBoxFuture<'static, Result<Option<D>, Self::Error>> {
         Box::pin(async move {
             self.pool
                 .get()

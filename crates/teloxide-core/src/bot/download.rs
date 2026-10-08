@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{
     bot::Bot,
     net::{self, Download},
-    send::{BoxFuture, BoxStream},
+    send::{MaybeSendBoxFuture, MaybeSendBoxStream},
     DownloadError,
 };
 
@@ -20,7 +20,7 @@ impl Download for Bot {
 
     // I would like to unbox this, but my coworkers will kill me if they'll see yet
     // another hand written `Future`. (waffle)
-    type Fut<'dst> = BoxFuture<'dst, Result<(), Self::Err<'dst>>>;
+    type Fut<'dst> = MaybeSendBoxFuture<'dst, Result<(), Self::Err<'dst>>>;
 
     #[cfg(not(target_arch = "wasm32"))]
     fn download_file<'dst>(
@@ -66,7 +66,7 @@ impl Download for Bot {
 
     type StreamErr = reqwest::Error;
 
-    type Stream = BoxStream<'static, Result<Bytes, Self::StreamErr>>;
+    type Stream = MaybeSendBoxStream<'static, Result<Bytes, Self::StreamErr>>;
 
     fn download_file_stream(&self, path: &str) -> Self::Stream {
         Box::pin(

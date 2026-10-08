@@ -1,6 +1,6 @@
 use futures::{future::ready, Future};
 
-use crate::send::{BoxFuture, MaybeSend};
+use crate::send::{MaybeSend, MaybeSendBoxFuture};
 
 // Required to not trigger `clippy::type-complexity` lint
 #[cfg(not(target_arch = "wasm32"))]
@@ -8,7 +8,7 @@ type BoxedFnMut<I, O> = Box<dyn FnMut(I) -> O + Send>;
 #[cfg(target_arch = "wasm32")]
 type BoxedFnMut<I, O> = Box<dyn FnMut(I) -> O>;
 
-type BoxedFuture = BoxFuture<'static, ()>;
+type BoxedFuture = MaybeSendBoxFuture<'static, ()>;
 
 /// Settings used by [`Throttle`] adaptor.
 ///

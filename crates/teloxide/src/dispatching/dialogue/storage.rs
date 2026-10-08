@@ -12,7 +12,7 @@ mod sqlite_storage;
 #[cfg(any(feature = "postgres-storage-nativetls", feature = "postgres-storage-rustls"))]
 mod postgres_storage;
 
-use futures::future::BoxFuture;
+use teloxide_core::send::MaybeSendBoxFuture;
 use teloxide_core::types::ChatId;
 
 pub use self::{
@@ -63,7 +63,7 @@ pub trait Storage<D> {
     fn remove_dialogue(
         self: Arc<Self>,
         chat_id: ChatId,
-    ) -> BoxFuture<'static, Result<(), Self::Error>>
+    ) -> MaybeSendBoxFuture<'static, Result<(), Self::Error>>
     where
         D: Send + 'static;
 
@@ -73,7 +73,7 @@ pub trait Storage<D> {
         self: Arc<Self>,
         chat_id: ChatId,
         dialogue: D,
-    ) -> BoxFuture<'static, Result<(), Self::Error>>
+    ) -> MaybeSendBoxFuture<'static, Result<(), Self::Error>>
     where
         D: Send + 'static;
 
@@ -82,7 +82,7 @@ pub trait Storage<D> {
     fn get_dialogue(
         self: Arc<Self>,
         chat_id: ChatId,
-    ) -> BoxFuture<'static, Result<Option<D>, Self::Error>>;
+    ) -> MaybeSendBoxFuture<'static, Result<Option<D>, Self::Error>>;
 
     /// Erases [`Self::Error`] to [`std::error::Error`].
     #[must_use]
@@ -107,7 +107,7 @@ where
     fn remove_dialogue(
         self: Arc<Self>,
         chat_id: ChatId,
-    ) -> BoxFuture<'static, Result<(), Self::Error>>
+    ) -> MaybeSendBoxFuture<'static, Result<(), Self::Error>>
     where
         D: Send + 'static,
     {
@@ -120,7 +120,7 @@ where
         self: Arc<Self>,
         chat_id: ChatId,
         dialogue: D,
-    ) -> BoxFuture<'static, Result<(), Self::Error>>
+    ) -> MaybeSendBoxFuture<'static, Result<(), Self::Error>>
     where
         D: Send + 'static,
     {
@@ -132,7 +132,7 @@ where
     fn get_dialogue(
         self: Arc<Self>,
         chat_id: ChatId,
-    ) -> BoxFuture<'static, Result<Option<D>, Self::Error>> {
+    ) -> MaybeSendBoxFuture<'static, Result<Option<D>, Self::Error>> {
         Box::pin(
             async move { Arc::clone(&self.0).get_dialogue(chat_id).await.map_err(|e| e.into()) },
         )

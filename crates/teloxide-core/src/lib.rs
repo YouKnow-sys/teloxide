@@ -139,7 +139,6 @@ pub mod prelude;
 pub mod requests;
 #[doc(hidden)]
 pub mod rt;
-#[doc(hidden)]
 pub mod send;
 pub mod types;
 

@@ -45,7 +45,7 @@ macro_rules! req_future {
 
             #[cfg(not(feature = "nightly"))]
             pub(crate) type $i<$T>
-            $(where $($wh)*)?  = $crate::send::BoxFuture<'static, $Out>;
+            $(where $($wh)*)?  = $crate::send::MaybeSendBoxFuture<'static, $Out>;
 
             #[cfg(not(feature = "nightly"))]
             pub(crate) fn def<$T>($( $arg: $ArgTy ),*) -> $i<$T>
